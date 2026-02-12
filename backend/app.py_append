@@ -1,0 +1,35 @@
+@app.route("/tables/<table_name>", methods=["DELETE"])
+def delete_table(table_name):
+    safe_table = table_name.replace("-", "_").replace(" ", "_")
+    conn = get_connection()
+    try:
+        conn.execute(f'DROP TABLE IF EXISTS "{safe_table}"')
+        # Optional: Clean up metadata if you want strict consistency
+        conn.execute('DELETE FROM __uploads_meta__ WHERE table_name = ?', (table_name,))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"Failed to delete table: {e}"}), 400
+    
+    conn.close()
+    return jsonify({"message": f"Table {table_name} deleted successfully"})
+
+
+@app.route("/export/<table_name>", methods=["GET"])
+def export_table(table_name):
+    safe_table = table_name.replace("-", "_").replace(" ", "_")
+    conn = get_connection()
+    try:
+        df = pd.read_sql(f'SELECT * FROM "{safe_table}"', conn)
+        conn.close()
+        
+        # Convert to CSV string
+        csv_data = df.to_csv(index=False)
+        
+        return csv_data, 200, {
+            "Content-Type": "text/csv",
+            "Content-Disposition": f"attachment; filename={table_name}.csv"
+        }
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"Failed to export table: {e}"}), 400
