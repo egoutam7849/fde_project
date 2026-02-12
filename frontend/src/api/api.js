@@ -19,6 +19,9 @@ export const endpoints = {
     exportTable: (tableName) => `${API_BASE_URL}/export/${tableName}`,
     runQuery: (query) => api.post('/query', { query }),
     getStats: () => api.get('/stats'),
+    getHistory: () => api.get('/history'),
+    getQueries: () => api.get('/history/queries'),
+    getQuality: (tableName) => api.get(`/quality/${tableName}`),
 };
 
 export default api;

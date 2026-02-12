@@ -5,7 +5,7 @@ import ResultTable from '../components/UI/ResultTable';
 import clsx from 'clsx';
 
 const SQLRunner = () => {
-  const [query, setQuery] = useState('SELECT * FROM sqlite_master WHERE type="table";');
+  const [query, setQuery] = useState('SHOW TABLES;');
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);

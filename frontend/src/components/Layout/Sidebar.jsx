@@ -1,4 +1,4 @@
-import { LayoutDashboard, Upload, Database, Terminal, BarChart2, Settings, LogOut, Clock, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Upload, Database, Terminal, BarChart2, Settings, LogOut, Clock, ShieldCheck, Download } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import clsx from 'clsx';
 
@@ -8,9 +8,10 @@ const Sidebar = () => {
     { name: 'Upload CSV', path: '/upload', icon: Upload },
     { name: 'Tables', path: '/tables', icon: Database },
     { name: 'SQL Runner', path: '/sql', icon: Terminal },
-    { name: 'Analytics', path: '/analytics', icon: BarChart2 },
-    { name: 'File History', path: '/history', icon: Clock }, // New
-    { name: 'Data Quality', path: '/quality', icon: ShieldCheck }, // New
+    { name: 'File History', path: '/history', icon: Clock },
+    { name: 'Query History', path: '/query-history', icon: Terminal },
+    { name: 'Data Quality', path: '/quality', icon: ShieldCheck },
+    { name: 'Export Center', path: '/export', icon: Download },
   ];
 
   return (
