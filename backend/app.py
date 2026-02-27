@@ -88,6 +88,15 @@ def upload_csv():
 
     try:
         df = pd.read_csv(file)
+        # Ensure column names are valid strings (handle missing/NaN headers)
+        new_cols = []
+        for i, col in enumerate(df.columns):
+            if pd.isna(col) or str(col).strip() == "":
+                new_name = f"col_{i}"
+            else:
+                new_name = str(col).replace("-", "_").replace(" ", "_")
+            new_cols.append(new_name)
+        df.columns = new_cols
     except Exception as e:
         return jsonify({"error": f"Failed to read CSV: {e}"}), 400
 
@@ -107,22 +116,51 @@ def upload_csv():
         
         # Create table logic
         cols = ", ".join([f"`{col}` TEXT" for col in df.columns]) # Simplified type inference
-        conn.cursor().execute(f"DROP TABLE IF EXISTS `{table_name}`")
-        conn.cursor().execute(f"CREATE TABLE `{table_name}` ({cols})")
-        
-        # Insert data
-        cursor = conn.cursor()
+        cur = conn.cursor()
+        cur.execute(f"DROP TABLE IF EXISTS `{table_name}`")
+        cur.execute(f"CREATE TABLE `{table_name}` ({cols})")
+
+        # Prepare insert
         placeholders = ", ".join(["%s"] * len(df.columns))
         sql = f"INSERT INTO `{table_name}` VALUES ({placeholders})"
-        
-        # Convert df to tuples, handling NaN
-        data = [tuple(x) for x in df.where(pd.notnull(df), None).to_numpy()]
-        cursor.executemany(sql, data)
+
+        # Convert dataframe to Python-native lists and replace NaN/'nan' with None
+        df = df.where(pd.notnull(df), None)
+
+        def _sanitize_cell(v):
+            # Handle None
+            if v is None:
+                return None
+            # pandas uses numpy types; convert numpy scalars to native Python
+            try:
+                # numpy scalar
+                if hasattr(v, 'item'):
+                    v = v.item()
+            except Exception:
+                pass
+            # floats that are NaN
+            try:
+                import math
+                if isinstance(v, float) and math.isnan(v):
+                    return None
+            except Exception:
+                pass
+            # string 'nan' (sometimes appears as literal)
+            if isinstance(v, str) and v.strip().lower() == 'nan':
+                return None
+            return v
+
+        raw_rows = df.values.tolist()
+        data = []
+        for row in raw_rows:
+            data.append(tuple(_sanitize_cell(x) for x in row))
+
+        cur.executemany(sql, data)
         
         rows_inserted = len(df)
 
         # Record metadata
-        cursor.execute(
+        cur.execute(
             """
             INSERT INTO __uploads_meta__ (table_name, file_name, rows_inserted, created_at)
             VALUES (%s, %s, %s, %s)

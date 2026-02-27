@@ -1,4 +1,4 @@
-@app.route("/tables/<table_name>", methods=["DELETE"])
+C:/fde_project/.venv/Scripts/python.exe app.py@app.route("/tables/<table_name>", methods=["DELETE"])
 def delete_table(table_name):
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     conn = get_connection()
