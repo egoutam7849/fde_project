@@ -189,8 +189,10 @@ const Tables = () => {
                   <ChevronRight className="w-5 h-5" />
                 </button>
               </div>
-              <span className="text-gray-400 border-l pl-3 ml-1">
-                {tableData.total_rows?.toLocaleString()} rows total
+              <span className="text-gray-400 border-l pl-3 ml-1 flex items-center gap-2">
+                <span>{tableData.total_rows?.toLocaleString()} rows</span>
+                <span className="w-1 h-1 rounded-full bg-gray-300"></span>
+                <span>{tableData.columns?.length || 0} columns</span>
               </span>
             </div>
           )}

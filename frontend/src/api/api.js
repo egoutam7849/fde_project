@@ -34,6 +34,7 @@ export const endpoints = {
     getQueries: () => api.get('/history/queries'),
     getQuality: (tableName) => api.get(`/quality/${tableName}`),
     // Admin User Management
+    register: (userData) => api.post('/auth/register', userData),
     getUsers: () => api.get('/admin/users'),
     addUser: (userData) => api.post('/admin/users', userData),
     deleteUser: (userId) => api.delete(`/admin/users/${userId}`),

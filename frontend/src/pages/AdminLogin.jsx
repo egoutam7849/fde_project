@@ -95,6 +95,9 @@ const AdminLogin = () => {
                         >
                             Are you a student? Login here.
                         </button>
+                        <div className="mt-2 text-slate-500 text-xs">
+                            Don't have an account? <button onClick={() => navigate('/register')} className="text-blue-400 hover:underline">Register</button>
+                        </div>
                     </div>
                 </div>
             </div>

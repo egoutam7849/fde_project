@@ -14,6 +14,7 @@ import AdminLogin from './pages/AdminLogin';
 import StudentLogin from './pages/StudentLogin';
 import Users from './pages/Users';
 import AuditLogs from './pages/AuditLogs';
+import Register from './pages/Register';
 
 const ProtectedRoute = ({ children, requiredRole }) => {
     const { user, loading } = useAuth();
@@ -45,6 +46,7 @@ function App() {
                 <Routes>
                     <Route path="/login" element={<AdminLogin />} />
                     <Route path="/student-login" element={<StudentLogin />} />
+                    <Route path="/register" element={<Register />} />
 
                     <Route path="/" element={
                         <ProtectedRoute>

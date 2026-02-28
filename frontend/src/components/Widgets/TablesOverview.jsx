@@ -4,6 +4,14 @@ import { Database, Trash2, Eye } from 'lucide-react';
 const TablesOverview = ({ stats, onDelete }) => {
     const navigate = useNavigate();
 
+    const formatSize = (bytes) => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
     return (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
             <div className="flex items-center justify-between mb-6">
@@ -22,6 +30,7 @@ const TablesOverview = ({ stats, onDelete }) => {
                         <tr>
                             <th className="px-4 py-3 rounded-l-lg">Table Name</th>
                             <th className="px-4 py-3">Rows</th>
+                            <th className="px-4 py-3">Size</th>
                             <th className="px-4 py-3 rounded-r-lg text-right">Actions</th>
                         </tr>
                     </thead>
@@ -33,6 +42,9 @@ const TablesOverview = ({ stats, onDelete }) => {
                                 </td>
                                 <td className="px-4 py-3 text-gray-600">
                                     {table.rows.toLocaleString()}
+                                </td>
+                                <td className="px-4 py-3 text-gray-500 text-xs">
+                                    {formatSize(table.size || 0)}
                                 </td>
                                 <td className="px-4 py-3 text-right flex justify-end gap-2">
                                     <button
@@ -54,7 +66,7 @@ const TablesOverview = ({ stats, onDelete }) => {
                         ))}
                         {(!stats?.table_stats || stats.table_stats.length === 0) && (
                             <tr>
-                                <td colSpan="3" className="px-4 py-6 text-center text-gray-400">
+                                <td colSpan="4" className="px-4 py-6 text-center text-gray-400">
                                     No tables found. Upload a CSV to get started.
                                 </td>
                             </tr>

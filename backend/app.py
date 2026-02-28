@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask.json.provider import DefaultJSONProvider
+import json
+
 import os
 import mysql.connector
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from passlib.hash import pbkdf2_sha256
 from functools import wraps
@@ -89,10 +91,30 @@ def init_db():
     conn.close()
 
 
+class CustomJSONProvider(DefaultJSONProvider):
+    def default(self, obj):
+        if isinstance(obj, (datetime, timedelta, date)):
+            return str(obj)
+        return super().default(obj)
+
 app = Flask(__name__)
+app.json = CustomJSONProvider(app)
 app.config["JWT_SECRET_KEY"] = "super-secret-fde-key" # In production, use env var
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-CORS(app)
+
+@app.before_request
+def handle_options():
+    if request.method == 'OPTIONS':
+        return Flask.make_default_options_response(app)
+
+@app.after_request
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin'] = 'http://localhost:5173'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
+
 jwt = JWTManager(app)
 
 # Role decorator
@@ -141,6 +163,58 @@ def index():
             "/history"
         ]
     })
+
+
+@app.route("/auth/register", methods=["POST"])
+def register():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    role = data.get("role", "student") # Default to student
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    if role not in ["admin", "student"]:
+        return jsonify({"error": "Invalid role"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    
+    # Check if username exists
+    cur.execute("SELECT id FROM __users__ WHERE username = %s", (username,))
+    if cur.fetchone():
+        conn.close()
+        return jsonify({"error": "Username already exists"}), 400
+
+    password_hash = pbkdf2_sha256.hash(password)
+    cur.execute(
+        "INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+        (username, password_hash, role, datetime.now())
+    )
+    conn.commit()
+    
+    # Get the new user
+    cur.execute("SELECT * FROM __users__ WHERE username = %s", (username,))
+    user = cur.fetchone()
+    conn.close()
+
+    log_activity(username, "Registration", f"New user '{username}' registered as '{role}'")
+
+    access_token = create_access_token(
+        identity=str(user["id"]), 
+        additional_claims={"username": user["username"], "role": user["role"]}
+    )
+
+    return jsonify({
+        "access_token": access_token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"]
+        },
+        "message": "User registered successfully"
+    }), 201
 
 
 @app.route("/auth/login", methods=["POST"])
@@ -337,29 +411,30 @@ def run_query():
 @jwt_required()
 def get_stats():
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SHOW TABLES")
-    all_tables = [row[0] for row in cur.fetchall()]
-    user_tables = [t for t in all_tables if not t.startswith("__")]
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SHOW TABLE STATUS")
+    stats_data = cur.fetchall()
     
-    total_tables = len(user_tables)
     table_stats = []
     total_rows = 0
-    for table in user_tables:
-        try:
-            cur.execute(f"SELECT COUNT(*) as c FROM `{table}`")
-            count = cur.fetchone()[0]
-            total_rows += count
-            table_stats.append({"name": table, "rows": count})
-        except: table_stats.append({"name": table, "rows": 0})
+    for row in stats_data:
+        if row['Name'].startswith('__'):
+            continue
+            
+        table_stats.append({
+            "name": row['Name'],
+            "rows": row['Rows'] or 0,
+            "size": (row['Data_length'] or 0) + (row['Index_length'] or 0)
+        })
+        total_rows += row['Rows'] or 0
+    
+    total_tables = len(table_stats)
 
     cur.execute("SELECT table_name, file_name, rows_inserted, created_at FROM __uploads_meta__ ORDER BY created_at DESC LIMIT 10")
-    columns = [col[0] for col in cur.description]
-    recent_uploads = [dict(zip(columns, row)) for row in cur.fetchall()]
+    recent_uploads = cur.fetchall()
     
     cur.execute("SELECT DATE(created_at) as upload_date, COUNT(*) as count FROM __uploads_meta__ GROUP BY upload_date ORDER BY upload_date DESC LIMIT 30")
-    columns = [col[0] for col in cur.description]
-    upload_trends = [dict(zip(columns, row)) for row in cur.fetchall()]
+    upload_trends = cur.fetchall()
 
     conn.close()
     return jsonify({
