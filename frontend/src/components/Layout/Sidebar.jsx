@@ -1,29 +1,48 @@
-import { LayoutDashboard, Upload, Database, Terminal, BarChart2, Settings, LogOut, Clock, ShieldCheck, Download } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import {
+  LayoutDashboard,
+  Upload,
+  Database,
+  Terminal,
+  Settings,
+  LogOut,
+  Clock,
+  ShieldCheck,
+  Download,
+  Activity as ActivityIcon
+} from 'lucide-react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import clsx from 'clsx';
 
 const Sidebar = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
   const navItems = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
-    { name: 'Upload CSV', path: '/upload', icon: Upload },
+    { name: 'Upload CSV', path: '/upload', icon: Upload, adminOnly: true },
     { name: 'Tables', path: '/tables', icon: Database },
-    { name: 'SQL Runner', path: '/sql', icon: Terminal },
+    { name: 'SQL Runner', path: '/sql', icon: Terminal, adminOnly: true },
     { name: 'File History', path: '/history', icon: Clock },
     { name: 'Query History', path: '/query-history', icon: Terminal },
     { name: 'Data Quality', path: '/quality', icon: ShieldCheck },
     { name: 'Export Center', path: '/export', icon: Download },
+    { name: 'User Management', path: '/users', icon: Settings, adminOnly: true },
+    { name: 'Audit Logs', path: '/logs', icon: ActivityIcon, adminOnly: true },
   ];
+
+  const filteredItems = navItems.filter(item => !item.adminOnly || user?.role === 'admin');
 
   return (
     <div className="h-screen w-64 bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0">
-      <div className="p-6 border-b border-gray-100 flex items-center justify-center">
-        <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-indigo-600">
-          DataLoader
-        </h1>
-      </div>
 
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => (
+        {filteredItems.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
@@ -43,7 +62,10 @@ const Sidebar = () => {
       </nav>
 
       <div className="p-4 border-t border-gray-100">
-        <button className="flex items-center gap-3 px-4 py-3 w-full text-gray-600 hover:bg-red-50 hover:text-red-600 rounded-xl transition-colors">
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-3 px-4 py-3 w-full text-gray-600 hover:bg-red-50 hover:text-red-600 rounded-xl transition-colors"
+        >
           <LogOut className="w-5 h-5" />
           <span>Logout</span>
         </button>

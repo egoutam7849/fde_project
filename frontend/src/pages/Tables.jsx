@@ -2,9 +2,11 @@ import { useState, useEffect } from 'react';
 import { endpoints } from '../api/api';
 import ResultTable from '../components/UI/ResultTable';
 import { Database, Search, Table as TableIcon, Trash2, Download, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import clsx from 'clsx';
 
 const Tables = () => {
+  const { user } = useAuth();
   const [tables, setTables] = useState([]);
   const [selectedTable, setSelectedTable] = useState(null);
   const [tableData, setTableData] = useState({ columns: [], rows: [], total_rows: 0, page: 1, limit: 50 });
@@ -120,8 +122,8 @@ const Tables = () => {
                 key={table}
                 onClick={() => setSelectedTable(table)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center transition-colors ${selectedTable === table
-                    ? 'bg-blue-50 text-blue-700 font-medium'
-                    : 'text-gray-600 hover:bg-gray-50'
+                  ? 'bg-blue-50 text-blue-700 font-medium'
+                  : 'text-gray-600 hover:bg-gray-50'
                   }`}
               >
                 <TableIcon className="w-4 h-4 mr-2 opacity-70" />
@@ -146,13 +148,15 @@ const Tables = () => {
             </h3>
             {selectedTable && (
               <div className="flex items-center gap-2">
-                <button
-                  onClick={handleDeleteTable}
-                  className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                  title="Delete Table"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {user?.role === 'admin' && (
+                  <button
+                    onClick={handleDeleteTable}
+                    className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Delete Table"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   onClick={handleDownloadCSV}
                   className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"

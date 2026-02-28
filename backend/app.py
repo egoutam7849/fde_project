@@ -3,7 +3,10 @@ from flask_cors import CORS
 import os
 import mysql.connector
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
+from passlib.hash import pbkdf2_sha256
+from functools import wraps
 
 # MySQL Configuration
 DB_CONFIG = {
@@ -19,6 +22,18 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
+    # Users table
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS __users__ (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(255) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            role ENUM('admin', 'student') NOT NULL DEFAULT 'student',
+            created_at DATETIME NOT NULL
+        )
+        """
+    )
     # Metadata table to track uploads
     cur.execute(
         """
@@ -42,12 +57,69 @@ def init_db():
         )
         """
     )
+    # System logs table
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS __system_logs__ (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(255) NOT NULL,
+            action VARCHAR(50) NOT NULL,
+            details TEXT,
+            created_at DATETIME NOT NULL
+        )
+        """
+    )
+    
+    # Seed default admin if no users exist
+    cur.execute("SELECT COUNT(*) FROM __users__")
+    if cur.fetchone()[0] == 0:
+        admin_pass = pbkdf2_sha256.hash("admin123")
+        cur.execute(
+            "INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+            ("admin", admin_pass, "admin", datetime.now()),
+        )
+        # Seed a student for testing
+        student_pass = pbkdf2_sha256.hash("student123")
+        cur.execute(
+            "INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+            ("student", student_pass, "student", datetime.now()),
+        )
+    
     conn.commit()
     conn.close()
 
 
 app = Flask(__name__)
+app.config["JWT_SECRET_KEY"] = "super-secret-fde-key" # In production, use env var
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 CORS(app)
+jwt = JWTManager(app)
+
+# Role decorator
+def admin_required():
+    def wrapper(fn):
+        @wraps(fn)
+        @jwt_required()
+        def decorator(*args, **kwargs):
+            claims = get_jwt()
+            if claims.get("role") != "admin":
+                return jsonify({"error": "Admin access required"}), 403
+            return fn(*args, **kwargs)
+        return decorator
+    return wrapper
+
+def log_activity(username, action, details=None):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO __system_logs__ (username, action, details, created_at) VALUES (%s, %s, %s, %s)",
+            (username, action, details, datetime.now())
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Logging failed: {e}")
 
 # Initialize DB on startup
 try:
@@ -60,18 +132,62 @@ except Exception as e:
 def index():
     return jsonify({
         "status": "online",
-        "message": "Backend API is running (MySQL Reloaded)",
+        "message": "Backend API is running (Auth Enabled)",
         "endpoints": [
+            "/auth/login",
             "/upload",
             "/tables",
             "/stats",
-            "/history",
-            "/history/queries"
+            "/history"
         ]
     })
 
 
+@app.route("/auth/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT * FROM __users__ WHERE username = %s", (username,))
+    user = cur.fetchone()
+    conn.close()
+
+    if user and pbkdf2_sha256.verify(password, user["password_hash"]):
+        access_token = create_access_token(
+            identity=str(user["id"]), 
+            additional_claims={"username": user["username"], "role": user["role"]}
+        )
+        log_activity(user["username"], "Login", f"User logged in from {request.remote_addr}")
+        return jsonify({
+            "access_token": access_token,
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "role": user["role"]
+            }
+        })
+
+    return jsonify({"error": "Invalid credentials"}), 401
+
+
+@app.route("/auth/me", methods=["GET"])
+@jwt_required()
+def get_me():
+    claims = get_jwt()
+    return jsonify({
+        "username": claims.get("username"),
+        "role": claims.get("role")
+    })
+
+
 @app.route("/upload", methods=["POST"])
+@admin_required()
 def upload_csv():
     if "file" not in request.files:
         return jsonify({"error": "No file part"}), 400
@@ -177,10 +293,12 @@ def upload_csv():
     except Exception as e:
         return jsonify({"error": f"Failed to save to database: {e}"}), 500
 
+    log_activity(get_jwt().get("username"), "Upload", f"Uploaded table '{table_name}' with {rows_inserted} rows")
     return jsonify({"table": table_name, "rows": rows_inserted})
 
 
 @app.route("/tables", methods=["GET"])
+@jwt_required()
 def list_tables():
     conn = get_connection()
     cur = conn.cursor()
@@ -192,6 +310,7 @@ def list_tables():
 
 
 @app.route("/data/<table_name>", methods=["GET"])
+@jwt_required()
 def get_table_data(table_name):
     # ... (keep existing implementation but ensure table name is safe provided it comes from list_tables)
     safe_table = table_name.replace("-", "_").replace(" ", "_")
@@ -231,6 +350,7 @@ def get_table_data(table_name):
 
 
 @app.route("/query", methods=["POST"])
+@admin_required()
 def run_query():
     body = request.get_json(silent=True) or {}
     sql = body.get("query", "")
@@ -277,6 +397,7 @@ def run_query():
 
 
 @app.route("/stats", methods=["GET"])
+@jwt_required()
 def get_stats():
     conn = get_connection()
     cur = conn.cursor()
@@ -351,6 +472,7 @@ def get_stats():
 
 
 @app.route("/tables/<table_name>", methods=["DELETE"])
+@admin_required()
 def delete_table(table_name):
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     conn = get_connection()
@@ -363,11 +485,13 @@ def delete_table(table_name):
         conn.close()
         return jsonify({"error": f"Failed to delete table: {e}"}), 400
     
+    log_activity(get_jwt().get("username"), "Delete Table", f"Deleted table '{table_name}'")
     conn.close()
     return jsonify({"message": f"Table {table_name} deleted successfully"})
 
 
 @app.route("/export/<table_name>", methods=["GET"])
+@jwt_required()
 def export_table(table_name):
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     conn = get_connection()
@@ -390,6 +514,7 @@ def export_table(table_name):
 
 
 @app.route("/history", methods=["GET"])
+@jwt_required()
 def get_history():
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
@@ -406,6 +531,7 @@ def get_history():
 
 
 @app.route("/history/queries", methods=["GET"])
+@jwt_required()
 def get_query_history():
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
@@ -423,6 +549,7 @@ def get_query_history():
 
 
 @app.route("/quality/<table_name>", methods=["GET"])
+@jwt_required()
 def get_data_quality(table_name):
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     conn = get_connection()
@@ -464,6 +591,94 @@ def get_data_quality(table_name):
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to analyze table: {e}"}), 400
+
+
+@app.route("/admin/users", methods=["GET"])
+@admin_required()
+def get_users():
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT id, username, role, created_at FROM __users__ ORDER BY created_at DESC")
+    users = cur.fetchall()
+    conn.close()
+    return jsonify({"users": users})
+
+
+@app.route("/admin/users", methods=["POST"])
+@admin_required()
+def add_user():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    role = data.get("role", "student")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password required"}), 400
+
+    if role not in ["admin", "student"]:
+        return jsonify({"error": "Invalid role"}), 400
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # Check if user already exists
+        cur.execute("SELECT id FROM __users__ WHERE username = %s", (username,))
+        if cur.fetchone():
+            conn.close()
+            return jsonify({"error": "Username already exists"}), 400
+
+        password_hash = pbkdf2_sha256.hash(password)
+        cur.execute(
+            "INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+            (username, password_hash, role, datetime.now())
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        return jsonify({"error": f"Failed to create user: {e}"}), 500
+
+    log_activity(get_jwt().get("username"), "User Management", f"Created user '{username}' with role '{role}'")
+    return jsonify({"message": "User created successfully"})
+
+
+@app.route("/admin/users/<int:user_id>", methods=["DELETE"])
+@admin_required()
+def delete_user(user_id):
+    # Prevent self-deletion
+    current_user_id = int(get_jwt_identity())
+    
+    if user_id == current_user_id:
+        return jsonify({"error": "You cannot delete your own account"}), 400
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        # Get username before delete for logging
+        cur.execute("SELECT username FROM __users__ WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        target_username = row["username"] if row else "Unknown"
+        
+        cur.execute("DELETE FROM __users__ WHERE id = %s", (user_id,))
+        conn.commit()
+        log_activity(get_jwt().get("username"), "User Management", f"Deleted user '{target_username}'")
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"Failed to delete user: {e}"}), 500
+    
+    conn.close()
+    return jsonify({"message": "User deleted successfully"})
+
+
+@app.route("/admin/logs", methods=["GET"])
+@admin_required()
+def get_audit_logs():
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT * FROM __system_logs__ ORDER BY created_at DESC LIMIT 100")
+    logs = cur.fetchall()
+    conn.close()
+    return jsonify({"logs": logs})
 
 
 if __name__ == "__main__":
