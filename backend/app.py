@@ -132,7 +132,7 @@ except Exception as e:
 def index():
     return jsonify({
         "status": "online",
-        "message": "Backend API is running (Auth Enabled)",
+        "message": "Backend API is running (Full Version)",
         "endpoints": [
             "/auth/login",
             "/upload",
@@ -197,14 +197,12 @@ def upload_csv():
         return jsonify({"error": "No selected file"}), 400
 
     table_name = os.path.splitext(os.path.basename(file.filename))[0]
-    # Normalize table name to avoid invalid characters
     table_name = table_name.replace("-", "_").replace(" ", "_")
     if not table_name:
         return jsonify({"error": "Invalid file name"}), 400
 
     try:
         df = pd.read_csv(file)
-        # Ensure column names are valid strings (handle missing/NaN headers)
         new_cols = []
         for i, col in enumerate(df.columns):
             if pd.isna(col) or str(col).strip() == "":
@@ -221,79 +219,43 @@ def upload_csv():
 
     try:
         conn = get_connection()
-        # Use pandas to_sql with mysql connector using sqlalchemy engine is better, 
-        # but standard to_sql needs sqlalchemy. 
-        # For simplicity without sqlalchemy dependency, consistent with previous style:
-        # We'll use pandas to_sql if sqlalchemy is present, or manual insert.
-        # But 'mysql-connector-python' alone doesn't support to_sql directly without sqlalchemy.
-        # Let's use sqlalchemy if possible, or manual.
-        # Check if sqlalchemy is available? It should be standard with pandas often, but let's be safe.
-        # Actually, let's just use manual insert for now to avoid sqlalchemy dependency issues if not present.
-        
-        # Create table logic
-        cols = ", ".join([f"`{col}` TEXT" for col in df.columns]) # Simplified type inference
+        cols = ", ".join([f"`{col}` TEXT" for col in df.columns])
         cur = conn.cursor()
         cur.execute(f"DROP TABLE IF EXISTS `{table_name}`")
         cur.execute(f"CREATE TABLE `{table_name}` ({cols})")
 
-        # Prepare insert
         placeholders = ", ".join(["%s"] * len(df.columns))
         sql = f"INSERT INTO `{table_name}` VALUES ({placeholders})"
-
-        # Convert dataframe to Python-native lists and replace NaN/'nan' with None
         df = df.where(pd.notnull(df), None)
-
+        
         def _sanitize_cell(v):
-            # Handle None
-            if v is None:
-                return None
-            # pandas uses numpy types; convert numpy scalars to native Python
+            if v is None: return None
             try:
-                # numpy scalar
-                if hasattr(v, 'item'):
-                    v = v.item()
-            except Exception:
-                pass
-            # floats that are NaN
+                if hasattr(v, "item"): v = v.item()
+            except: pass
             try:
                 import math
-                if isinstance(v, float) and math.isnan(v):
-                    return None
-            except Exception:
-                pass
-            # string 'nan' (sometimes appears as literal)
-            if isinstance(v, str) and v.strip().lower() == 'nan':
-                return None
+                if isinstance(v, float) and math.isnan(v): return None
+            except: pass
+            if isinstance(v, str) and v.strip().lower() == "nan": return None
             return v
 
         raw_rows = df.values.tolist()
-        data = []
-        for row in raw_rows:
-            data.append(tuple(_sanitize_cell(x) for x in row))
+        data = [tuple(_sanitize_cell(x) for x in row) for row in raw_rows]
 
         cur.executemany(sql, data)
-        
         rows_inserted = len(df)
 
-        # Record metadata
         cur.execute(
-            """
-            INSERT INTO __uploads_meta__ (table_name, file_name, rows_inserted, created_at)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (
-                table_name,
-                file.filename,
-                rows_inserted,
-                datetime.now()
-            ),
+            "INSERT INTO __uploads_meta__ (table_name, file_name, rows_inserted, created_at) VALUES (%s, %s, %s, %s)",
+            (table_name, file.filename, rows_inserted, datetime.now())
         )
         conn.commit()
         conn.close()
+        log_activity(get_jwt().get("username"), "Upload", f"Uploaded table '{table_name}' with {rows_inserted} rows")
     except Exception as e:
         return jsonify({"error": f"Failed to save to database: {e}"}), 500
 
-    log_activity(get_jwt().get("username"), "Upload", f"Uploaded table '{table_name}' with {rows_inserted} rows")
     return jsonify({"table": table_name, "rows": rows_inserted})
 
 
@@ -303,7 +265,6 @@ def list_tables():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SHOW TABLES")
-    # Filter out internal tables
     tables = [row[0] for row in cur.fetchall() if not row[0].startswith("__")]
     conn.close()
     return jsonify({"tables": tables})
@@ -312,7 +273,6 @@ def list_tables():
 @app.route("/data/<table_name>", methods=["GET"])
 @jwt_required()
 def get_table_data(table_name):
-    # ... (keep existing implementation but ensure table name is safe provided it comes from list_tables)
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     page = int(request.args.get("page", 1))
     limit = int(request.args.get("limit", 100))
@@ -321,32 +281,20 @@ def get_table_data(table_name):
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
     try:
-        # Get total rows
         cur.execute(f'SELECT COUNT(*) AS count FROM `{safe_table}`')
         total_rows = cur.fetchone()["count"]
-
-        # Get paginated data
         cur.execute(f'SELECT * FROM `{safe_table}` LIMIT %s OFFSET %s', (limit, offset))
         rows = cur.fetchall()
         columns = cur.column_names if rows else []
         if not columns:
-             # If no rows, get columns from metadata
              cur.execute(f"SHOW COLUMNS FROM `{safe_table}`")
              columns = [col['Field'] for col in cur.fetchall()]
-             
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to fetch data: {e}"}), 400
 
     conn.close()
-
-    return jsonify({
-        "columns": columns,
-        "rows": rows,
-        "total_rows": total_rows,
-        "page": page,
-        "limit": limit
-    })
+    return jsonify({"columns": columns, "rows": rows, "total_rows": total_rows, "page": page, "limit": limit})
 
 
 @app.route("/query", methods=["POST"])
@@ -357,7 +305,6 @@ def run_query():
     if not isinstance(sql, str) or not sql.strip():
         return jsonify({"error": "Query is required"}), 400
 
-    # Allow only SELECT statements (basic safeguard)
     stripped = sql.strip().lower()
     if not stripped.startswith("select") and not stripped.startswith("show") and not stripped.startswith("desc"):
         return jsonify({"error": "Only SELECT/SHOW/DESC queries are allowed"}), 400
@@ -369,25 +316,15 @@ def run_query():
         cur.execute(sql)
         rows = cur.fetchall()
         columns = cur.column_names if rows else []
-        
-        # Log query history
-        try:
-             duration = (datetime.now() - start_time).total_seconds() * 1000
-             # Use a robust way to insert history even if it fails
-             hist_conn = get_connection()
-             hist_cur = hist_conn.cursor()
-             hist_cur.execute(
-                """
-                INSERT INTO __query_history__ (query_text, execution_time_ms, created_at)
-                VALUES (%s, %s, %s)
-                """,
-                (sql, int(duration), datetime.now())
-             )
-             hist_conn.commit()
-             hist_conn.close()
-        except Exception as e:
-            print(f"Failed to log query: {e}")
-
+        duration = (datetime.now() - start_time).total_seconds() * 1000
+        hist_conn = get_connection()
+        hist_cur = hist_conn.cursor()
+        hist_cur.execute(
+            "INSERT INTO __query_history__ (query_text, execution_time_ms, created_at) VALUES (%s, %s, %s)",
+            (sql, int(duration), datetime.now())
+        )
+        hist_conn.commit()
+        hist_conn.close()
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Query failed: {e}"}), 400
@@ -401,74 +338,39 @@ def run_query():
 def get_stats():
     conn = get_connection()
     cur = conn.cursor()
-
-    # Get all tables
     cur.execute("SHOW TABLES")
     all_tables = [row[0] for row in cur.fetchall()]
-    
-    # Filter tables
     user_tables = [t for t in all_tables if not t.startswith("__")]
     
     total_tables = len(user_tables)
     table_stats = []
     total_rows = 0
-    
     for table in user_tables:
         try:
             cur.execute(f"SELECT COUNT(*) as c FROM `{table}`")
             count = cur.fetchone()[0]
             total_rows += count
             table_stats.append({"name": table, "rows": count})
-        except:
-            table_stats.append({"name": table, "rows": 0})
+        except: table_stats.append({"name": table, "rows": 0})
 
-    # Recent uploads
-    cur.execute(
-        """
-        SELECT table_name, file_name, rows_inserted, created_at
-        FROM __uploads_meta__
-        ORDER BY created_at DESC
-        LIMIT 10
-        """
-    )
-    # Manual dict conversion for recent_uploads
+    cur.execute("SELECT table_name, file_name, rows_inserted, created_at FROM __uploads_meta__ ORDER BY created_at DESC LIMIT 10")
     columns = [col[0] for col in cur.description]
     recent_uploads = [dict(zip(columns, row)) for row in cur.fetchall()]
     
-    # Upload trends (grouped by date)
-    cur.execute(
-        """
-        SELECT DATE(created_at) as upload_date, COUNT(*) as count
-        FROM __uploads_meta__
-        GROUP BY upload_date
-        ORDER BY upload_date DESC
-        LIMIT 30
-        """
-    )
+    cur.execute("SELECT DATE(created_at) as upload_date, COUNT(*) as count FROM __uploads_meta__ GROUP BY upload_date ORDER BY upload_date DESC LIMIT 30")
     columns = [col[0] for col in cur.description]
     upload_trends = [dict(zip(columns, row)) for row in cur.fetchall()]
 
-    # Get DB info
-    cur.execute("SELECT DATABASE()")
-    current_db = cur.fetchone()[0]
-
     conn.close()
-
-    return jsonify(
-        {
-            "total_tables": total_tables,
-            "total_rows": total_rows,
-            "recent_uploads": recent_uploads,
-            "upload_trends": upload_trends,
-            "total_files_uploaded": len(recent_uploads), # Approximate
-            "table_stats": table_stats,
-            "system_info": {
-                "db_type": "MySQL",
-                "python_version": "3.12", 
-                "server_status": "Online"
-            }
-        }
-    )
+    return jsonify({
+        "total_tables": total_tables,
+        "total_rows": total_rows,
+        "recent_uploads": recent_uploads,
+        "upload_trends": upload_trends,
+        "total_files_uploaded": len(recent_uploads),
+        "table_stats": table_stats,
+        "system_info": {"db_type": "MySQL", "python_version": "3.12", "server_status": "Online"}
+    })
 
 
 @app.route("/tables/<table_name>", methods=["DELETE"])
@@ -477,15 +379,14 @@ def delete_table(table_name):
     safe_table = table_name.replace("-", "_").replace(" ", "_")
     conn = get_connection()
     try:
-        conn.cursor().execute(f'DROP TABLE IF EXISTS `{safe_table}`')
-        # Cleanup metadata
-        conn.cursor().execute('DELETE FROM __uploads_meta__ WHERE table_name = %s', (table_name,))
+        cur = conn.cursor()
+        cur.execute(f'DROP TABLE IF EXISTS `{safe_table}`')
+        cur.execute('DELETE FROM __uploads_meta__ WHERE table_name = %s', (table_name,))
         conn.commit()
+        log_activity(get_jwt().get("username"), "Delete Table", f"Deleted table '{table_name}'")
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to delete table: {e}"}), 400
-    
-    log_activity(get_jwt().get("username"), "Delete Table", f"Deleted table '{table_name}'")
     conn.close()
     return jsonify({"message": f"Table {table_name} deleted successfully"})
 
@@ -501,13 +402,8 @@ def export_table(table_name):
         rows = cur.fetchall()
         df = pd.DataFrame(rows)
         conn.close()
-        
         csv_data = df.to_csv(index=False)
-        
-        return csv_data, 200, {
-            "Content-Type": "text/csv",
-            "Content-Disposition": f"attachment; filename={table_name}.csv"
-        }
+        return csv_data, 200, {"Content-Type": "text/csv", "Content-Disposition": f"attachment; filename={table_name}.csv"}
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to export table: {e}"}), 400
@@ -518,13 +414,7 @@ def export_table(table_name):
 def get_history():
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT id, table_name, file_name, rows_inserted, created_at
-        FROM __uploads_meta__
-        ORDER BY created_at DESC
-        """
-    )
+    cur.execute("SELECT id, table_name, file_name, rows_inserted, created_at FROM __uploads_meta__ ORDER BY created_at DESC")
     history = cur.fetchall()
     conn.close()
     return jsonify({"history": history})
@@ -535,14 +425,7 @@ def get_history():
 def get_query_history():
     conn = get_connection()
     cur = conn.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT id, query_text, execution_time_ms, created_at
-        FROM __query_history__
-        ORDER BY created_at DESC
-        LIMIT 50
-        """
-    )
+    cur.execute("SELECT id, query_text, execution_time_ms, created_at FROM __query_history__ ORDER BY created_at DESC LIMIT 50")
     history = cur.fetchall()
     conn.close()
     return jsonify({"history": history})
@@ -555,39 +438,19 @@ def get_data_quality(table_name):
     conn = get_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        # Load data manually to avoid pd.read_sql needing sqlalchemy
         cur.execute(f'SELECT * FROM `{safe_table}`')
         rows = cur.fetchall()
         df = pd.DataFrame(rows)
         conn.close()
-
         total_rows = len(df)
         columns_info = []
-
         for col in df.columns:
             null_count = int(df[col].isnull().sum())
             unique_count = int(df[col].nunique())
             dtype = str(df[col].dtype)
-            
-            # Simple sample
             sample_values = df[col].dropna().head(3).tolist()
-
-            col_data = {
-                "name": col,
-                "type": dtype,
-                "null_count": null_count,
-                "null_percentage": round((null_count / total_rows * 100), 2) if total_rows > 0 else 0,
-                "unique_count": unique_count,
-                "samples": sample_values
-            }
-            columns_info.append(col_data)
-
-        return jsonify({
-            "table": table_name,
-            "total_rows": total_rows,
-            "columns": columns_info
-        })
-
+            columns_info.append({"name": col, "type": dtype, "null_count": null_count, "null_percentage": round((null_count / total_rows * 100), 2) if total_rows > 0 else 0, "unique_count": unique_count, "samples": sample_values})
+        return jsonify({"table": table_name, "total_rows": total_rows, "columns": columns_info})
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to analyze table: {e}"}), 400
@@ -611,61 +474,41 @@ def add_user():
     username = data.get("username")
     password = data.get("password")
     role = data.get("role", "student")
-
-    if not username or not password:
-        return jsonify({"error": "Username and password required"}), 400
-
-    if role not in ["admin", "student"]:
-        return jsonify({"error": "Invalid role"}), 400
-
+    if not username or not password: return jsonify({"error": "Username and password required"}), 400
+    if role not in ["admin", "student"]: return jsonify({"error": "Invalid role"}), 400
     try:
         conn = get_connection()
         cur = conn.cursor()
-        
-        # Check if user already exists
         cur.execute("SELECT id FROM __users__ WHERE username = %s", (username,))
         if cur.fetchone():
             conn.close()
             return jsonify({"error": "Username already exists"}), 400
-
         password_hash = pbkdf2_sha256.hash(password)
-        cur.execute(
-            "INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)",
-            (username, password_hash, role, datetime.now())
-        )
+        cur.execute("INSERT INTO __users__ (username, password_hash, role, created_at) VALUES (%s, %s, %s, %s)", (username, password_hash, role, datetime.now()))
         conn.commit()
         conn.close()
-    except Exception as e:
-        return jsonify({"error": f"Failed to create user: {e}"}), 500
-
-    log_activity(get_jwt().get("username"), "User Management", f"Created user '{username}' with role '{role}'")
+        log_activity(get_jwt().get("username"), "User Management", f"Created user '{username}' with role '{role}'")
+    except Exception as e: return jsonify({"error": f"Failed to create user: {e}"}), 500
     return jsonify({"message": "User created successfully"})
 
 
 @app.route("/admin/users/<int:user_id>", methods=["DELETE"])
 @admin_required()
 def delete_user(user_id):
-    # Prevent self-deletion
     current_user_id = int(get_jwt_identity())
-    
-    if user_id == current_user_id:
-        return jsonify({"error": "You cannot delete your own account"}), 400
-
+    if user_id == current_user_id: return jsonify({"error": "You cannot delete your own account"}), 400
     conn = get_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        # Get username before delete for logging
         cur.execute("SELECT username FROM __users__ WHERE id = %s", (user_id,))
         row = cur.fetchone()
         target_username = row["username"] if row else "Unknown"
-        
         cur.execute("DELETE FROM __users__ WHERE id = %s", (user_id,))
         conn.commit()
         log_activity(get_jwt().get("username"), "User Management", f"Deleted user '{target_username}'")
     except Exception as e:
         conn.close()
         return jsonify({"error": f"Failed to delete user: {e}"}), 500
-    
     conn.close()
     return jsonify({"message": "User deleted successfully"})
 
